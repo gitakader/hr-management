@@ -1,25 +1,14 @@
 import { NextRequest } from "next/server";
-import prisma from "@/lib/prisma";
 import { withAuth, successResponse, errorResponse } from "@/lib/middleware";
+import { getApplicationWithDetails, updateApplication, findFolderByApplicationId, updateFolder, createActivityLog, createNotification } from "@/lib/db";
 
 export const GET = withAuth(async (req, { user, params }) => {
   const id = parseInt(params.id);
   if (isNaN(id)) return errorResponse("Invalid ID");
 
-  const application = await prisma.application.findUnique({
-    where: { id },
-    include: {
-      jobPost: true,
-      user: {
-        select: { id: true, fullName: true, mobileNumber: true, role: true },
-        include: { profile: { include: { education: true, experience: true, training: true } } },
-      },
-      folders: true,
-    },
-  });
-
+  const application = getApplicationWithDetails(id);
   if (!application) return errorResponse("Application not found", 404);
-  if (user.role === "applicant" && application.userId !== user.id) {
+  if (user.role === "applicant" && application.user?.id !== user.id) {
     return errorResponse("Forbidden", 403);
   }
 
@@ -37,7 +26,7 @@ export const PUT = withAuth(async (req, { user, params }) => {
   const body = await req.json();
   const { status, comment, approvalDate, shortlistDate, interviewDate, rejectionReason, employeeId, joiningDate } = body;
 
-  const data: any = {};
+  const data: Record<string, any> = {};
   if (status) data.status = status;
   if (comment !== undefined) data.comment = comment;
   if (approvalDate) data.approvalDate = approvalDate;
@@ -47,40 +36,19 @@ export const PUT = withAuth(async (req, { user, params }) => {
   if (employeeId) data.employeeId = employeeId;
   if (joiningDate) data.joiningDate = joiningDate;
 
-  const application = await prisma.application.update({
-    where: { id },
-    data,
-    include: { jobPost: true, user: true },
-  });
+  const application = updateApplication(id, data);
 
   // If selected, rename folder to employee ID
   if (status === "selected" && employeeId) {
-    const folder = await prisma.folder.findFirst({
-      where: { applicationId: application.id },
-    });
+    const folder = findFolderByApplicationId(id);
     if (folder) {
-      await prisma.folder.update({
-        where: { id: folder.id },
-        data: { name: employeeId },
-      });
+      updateFolder(folder.id, { name: employeeId });
     }
   }
 
-  await prisma.activityLog.create({
-    data: {
-      userId: user.id,
-      action: `Application ${status || "Updated"}`,
-      details: `Application ${application.applicationId} status updated to ${status || "updated"}`,
-    },
-  });
+  const app = getApplicationWithDetails(id);
+  createActivityLog(user.id, `Application ${status || "Updated"}`, `Application ${application.applicationId} status updated to ${status || "updated"}`);
+  createNotification(application.userId, "Application Status Updated", `Your application (${application.applicationId}) status: ${status || "updated"}`);
 
-  await prisma.notification.create({
-    data: {
-      userId: application.userId,
-      title: "Application Status Updated",
-      message: `Your application (${application.applicationId}) status: ${status || "updated"}`,
-    },
-  });
-
-  return successResponse(application);
+  return successResponse(app);
 });

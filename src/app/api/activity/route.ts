@@ -1,13 +1,8 @@
 import { NextRequest } from "next/server";
-import prisma from "@/lib/prisma";
 import { withAuth, successResponse } from "@/lib/middleware";
+import { getActivityLogs } from "@/lib/db";
 
 export const GET = withAuth(async (req, { user }) => {
-  const activities = await prisma.activityLog.findMany({
-    where: { userId: user.id },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-    include: { user: { select: { fullName: true, role: true } } },
-  });
+  const activities = getActivityLogs(user.id, 100);
   return successResponse(activities);
 });

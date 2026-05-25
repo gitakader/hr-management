@@ -1,12 +1,9 @@
 import { NextRequest } from "next/server";
-import prisma from "@/lib/prisma";
 import { withAuth, successResponse, errorResponse } from "@/lib/middleware";
+import { findProfileByUserId, upsertProfile, createActivityLog } from "@/lib/db";
 
 export const GET = withAuth(async (req, { user }) => {
-  const profile = await prisma.profile.findUnique({
-    where: { userId: user.id },
-    include: { education: true, experience: true, training: true },
-  });
+  const profile = findProfileByUserId(user.id);
   return successResponse(profile || null);
 });
 
@@ -30,15 +27,9 @@ export const PUT = withAuth(async (req, { user }) => {
       isProfileComplete: true,
     };
 
-    const profile = await prisma.profile.upsert({
-      where: { userId: user.id },
-      update: data,
-      create: { userId: user.id, ...data },
-    });
-
-    await prisma.activityLog.create({
-      data: { userId: user.id, action: "Profile Updated", details: "Applicant updated their profile" },
-    });
+    upsertProfile(user.id, data);
+    const profile = findProfileByUserId(user.id);
+    createActivityLog(user.id, "Profile Updated", "Applicant updated their profile");
 
     return successResponse(profile);
   } catch (error) {

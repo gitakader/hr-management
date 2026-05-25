@@ -1,11 +1,8 @@
 import { NextRequest } from "next/server";
-import prisma from "@/lib/prisma";
 import { withAuth, successResponse } from "@/lib/middleware";
+import { getDocumentsByUserId } from "@/lib/db";
 
 export const GET = withAuth(async (req, { user }) => {
-  const documents = await prisma.document.findMany({
-    where: { userId: user.id },
-    orderBy: { createdAt: "desc" },
-  });
+  const documents = getDocumentsByUserId(user.id);
   return successResponse(documents);
 });

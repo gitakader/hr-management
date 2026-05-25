@@ -1,17 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
-import prisma from "@/lib/prisma";
+import { NextRequest } from "next/server";
 import { comparePassword, generateToken } from "@/lib/auth";
 import { errorResponse, successResponse } from "@/lib/middleware";
+import { findUserByMobile } from "@/lib/db";
 
 export async function POST(req: NextRequest) {
   try {
     const { mobileNumber, password } = await req.json();
-
     if (!mobileNumber || !password) {
       return errorResponse("Mobile number and password are required");
     }
 
-    const user = await prisma.user.findUnique({ where: { mobileNumber } });
+    const user = findUserByMobile(mobileNumber);
     if (!user || !comparePassword(password, user.password)) {
       return errorResponse("Invalid credentials", 401);
     }
@@ -24,12 +23,7 @@ export async function POST(req: NextRequest) {
 
     return successResponse({
       token,
-      user: {
-        id: user.id,
-        fullName: user.fullName,
-        mobileNumber: user.mobileNumber,
-        role: user.role,
-      },
+      user: { id: user.id, fullName: user.fullName, mobileNumber: user.mobileNumber, role: user.role },
     });
   } catch (error) {
     console.error("Login error:", error);

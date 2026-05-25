@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { withAuth, successResponse, errorResponse } from "@/lib/middleware";
 import { saveFile } from "@/lib/upload";
-import prisma from "@/lib/prisma";
+import { createDocument } from "@/lib/db";
 
 export const POST = withAuth(async (req, { user }) => {
   try {
@@ -13,15 +13,13 @@ export const POST = withAuth(async (req, { user }) => {
 
     const saved = await saveFile(file, `user_${user.id}/${category}`);
 
-    const doc = await prisma.document.create({
-      data: {
-        userId: user.id,
-        filename: saved.filename,
-        filepath: saved.filepath,
-        mimetype: saved.mimetype,
-        size: saved.size,
-        category,
-      },
+    const doc = createDocument({
+      userId: user.id,
+      filename: saved.filename,
+      filepath: saved.filepath,
+      mimetype: saved.mimetype,
+      size: saved.size,
+      category,
     });
 
     return successResponse(doc, 201);

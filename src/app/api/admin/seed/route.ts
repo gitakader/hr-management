@@ -1,94 +1,31 @@
-import { NextRequest } from "next/server";
-import prisma from "@/lib/prisma";
-import { hashPassword } from "@/lib/auth";
 import { successResponse, errorResponse } from "@/lib/middleware";
+import { hashPassword } from "@/lib/auth";
+import { upsertPermission, findUserByMobile, createUser, getDb, count } from "@/lib/db";
 
 export async function GET() {
   try {
-    // Create default permissions
-    const permNames = [
-      "read", "write", "edit", "delete", "approve", "reject", "shortlist", "interview_access"
-    ];
+    const permNames = ["read", "write", "edit", "delete", "approve", "reject", "shortlist", "interview_access"];
     for (const name of permNames) {
-      await prisma.permission.upsert({
-        where: { name },
-        update: {},
-        create: { name, description: `Can ${name}` },
-      });
+      upsertPermission(name, `Can ${name}`);
     }
 
-    // Create admin if not exists
-    const existingAdmin = await prisma.user.findUnique({ where: { mobileNumber: "01700000000" } });
-    if (!existingAdmin) {
-      await prisma.user.create({
-        data: {
-          fullName: "Super Admin",
-          mobileNumber: "01700000000",
-          password: hashPassword("admin123"),
-          role: "admin",
-        },
-      });
+    if (!findUserByMobile("01700000000")) {
+      createUser("Super Admin", "01700000000", hashPassword("admin123"), "admin");
+    }
+    if (!findUserByMobile("01700000001")) {
+      createUser("Sample Manager", "01700000001", hashPassword("manager123"), "manager");
+    }
+    if (!findUserByMobile("01700000002")) {
+      createUser("Sample Executive", "01700000002", hashPassword("executive123"), "executive");
     }
 
-    // Create sample manager
-    const existingMgr = await prisma.user.findUnique({ where: { mobileNumber: "01700000001" } });
-    if (!existingMgr) {
-      await prisma.user.create({
-        data: {
-          fullName: "Sample Manager",
-          mobileNumber: "01700000001",
-          password: hashPassword("manager123"),
-          role: "manager",
-        },
-      });
-    }
-
-    // Create sample executive
-    const existingExec = await prisma.user.findUnique({ where: { mobileNumber: "01700000002" } });
-    if (!existingExec) {
-      await prisma.user.create({
-        data: {
-          fullName: "Sample Executive",
-          mobileNumber: "01700000002",
-          password: hashPassword("executive123"),
-          role: "executive",
-        },
-      });
-    }
-
-    // Create sample job posts
-    const admin = await prisma.user.findFirst({ where: { role: "admin" } });
-    if (admin) {
-      const jobCount = await prisma.jobPost.count();
-      if (jobCount === 0) {
-        await prisma.jobPost.createMany({
-          data: [
-            {
-              title: "Senior Software Engineer",
-              companyName: "Tech Solutions Ltd",
-              designation: "Senior Software Engineer",
-              description: "We are looking for a Senior Software Engineer with 5+ years of experience.",
-              applicationDeadline: "2026-06-30",
-              createdById: admin.id,
-            },
-            {
-              title: "HR Manager",
-              companyName: "Global HR Corp",
-              designation: "Manager",
-              description: "Experienced HR Manager needed for our growing team.",
-              applicationDeadline: "2026-07-15",
-              createdById: admin.id,
-            },
-            {
-              title: "Junior Web Developer",
-              companyName: "Digital Agency BD",
-              designation: "Junior Developer",
-              description: "Fresh graduates are encouraged to apply.",
-              applicationDeadline: "2026-06-20",
-              createdById: admin.id,
-            },
-          ],
-        });
+    if (count("JobPost") === 0) {
+      const admin = findUserByMobile("01700000000");
+      if (admin) {
+        const stmt = getDb().prepare("INSERT INTO JobPost (title, companyName, designation, description, applicationDeadline, createdById) VALUES (?, ?, ?, ?, ?, ?)");
+        stmt.run("Senior Software Engineer", "Tech Solutions Ltd", "Senior Software Engineer", "We need a Senior Software Engineer with 5+ years experience.", "2026-06-30", admin.id);
+        stmt.run("HR Manager", "Global HR Corp", "Manager", "Experienced HR Manager needed.", "2026-07-15", admin.id);
+        stmt.run("Junior Web Developer", "Digital Agency BD", "Junior Developer", "Fresh graduates encouraged.", "2026-06-20", admin.id);
       }
     }
 
