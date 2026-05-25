@@ -32,7 +32,8 @@ export function findUserWithProfile(id: number): any {
 }
 
 export function createUser(fullName: string, mobileNumber: string, password: string, role: string = "applicant"): any {
-  getDb().prepare("INSERT INTO User (fullName, mobileNumber, password, role) VALUES (?, ?, ?, ?)").run(fullName, mobileNumber, password, role);
+  const now = new Date().toISOString();
+  getDb().prepare("INSERT INTO User (fullName, mobileNumber, password, role, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)").run(fullName, mobileNumber, password, role, now, now);
   return findUserByMobile(mobileNumber);
 }
 
@@ -70,7 +71,8 @@ export function upsertProfile(userId: number, data: Record<string, any>): void {
     const keys = ["userId", ...Object.keys(data)];
     const placeholders = keys.map(() => "?").join(", ");
     const values = [userId, ...Object.values(data)];
-    getDb().prepare(`INSERT INTO Profile (${keys.join(", ")}) VALUES (${placeholders})`).run(...values);
+    const pnow = new Date().toISOString();
+    getDb().prepare(`INSERT INTO Profile (${["userId", ...Object.keys(data), "createdAt", "updatedAt"].join(", ")}) VALUES (${["userId", ...Object.keys(data)].map(() => "?").join(", ")}, ?, ?)`).run(...values, pnow, pnow);
   }
 }
 
@@ -144,7 +146,8 @@ export function createJobPost(data: Record<string, any>): any {
   const keys = Object.keys(data);
   const placeholders = keys.map(() => "?").join(", ");
   const values = Object.values(data);
-  const result = getDb().prepare(`INSERT INTO JobPost (${keys.join(", ")}) VALUES (${placeholders})`).run(...values);
+  const jnow = new Date().toISOString();
+  const result = getDb().prepare(`INSERT INTO JobPost (${["createdAt", "updatedAt", ...Object.keys(data)].join(", ")}) VALUES (?, ?, ${placeholders})`).run(jnow, jnow, ...values);
   return getDb().prepare("SELECT * FROM JobPost WHERE id = ?").get(result.lastInsertRowid);
 }
 
@@ -194,7 +197,8 @@ export function createApplication(data: Record<string, any>): any {
   const keys = Object.keys(data);
   const placeholders = keys.map(() => "?").join(", ");
   const values = Object.values(data);
-  const result = getDb().prepare(`INSERT INTO Application (${keys.join(", ")}) VALUES (${placeholders})`).run(...values);
+  const anow = new Date().toISOString();
+  const result = getDb().prepare(`INSERT INTO Application (${["createdAt", "updatedAt", ...Object.keys(data)].join(", ")}) VALUES (?, ?, ${placeholders})`).run(anow, anow, ...values);
   return getDb().prepare("SELECT * FROM Application WHERE id = ?").get(result.lastInsertRowid);
 }
 
