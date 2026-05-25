@@ -1,130 +1,181 @@
-import Database from "better-sqlite3";
+import initSqlJs, { Database as SqlDatabase, SqlJsStatic } from "sql.js";
 import path from "path";
+import fs from "fs";
 
-const DB_PATH = process.env.DATABASE_URL?.replace("file:", "") || path.join(process.cwd(), "prisma", "dev.db");
+const DB_PATH = process.env.DATABASE_URL?.replace("file:", "") || path.join(process.cwd(), "dev.db");
 
-let db: Database.Database;
+let SQL: SqlJsStatic;
+let db: SqlDatabase;
+let initPromise: Promise<void> | null = null;
 
-export function getDb(): Database.Database {
-  if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma("journal_mode = WAL");
-    db.pragma("foreign_keys = ON");
-  }
+export async function initDb(): Promise<void> {
+  if (db) return;
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    SQL = await initSqlJs();
+    // Ensure directory exists
+    const dir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    if (fs.existsSync(DB_PATH)) {
+      const buffer = fs.readFileSync(DB_PATH);
+      db = new SQL.Database(buffer);
+    } else {
+      db = new SQL.Database();
+    }
+    db.run("PRAGMA foreign_keys = ON");
+  })();
+  return initPromise;
+}
+
+export function saveDb(): void {
+  if (!db) return;
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  fs.writeFileSync(DB_PATH, buffer);
+}
+
+export function getDb(): SqlDatabase {
+  if (!db) throw new Error("Database not initialized. Call initDb() first.");
   return db;
+}
+
+// Run a query and return all results as objects
+export function queryAll(sql: string, params: any[] = []): any[] {
+  const stmt = getDb().prepare(sql);
+  if (params.length > 0) stmt.bind(params);
+  const results: any[] = [];
+  while (stmt.step()) {
+    results.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return results;
+}
+
+// Run a query and return first result as object
+export function queryOne(sql: string, params: any[] = []): any | null {
+  const results = queryAll(sql, params);
+  return results.length > 0 ? results[0] : null;
+}
+
+// Run a write query (INSERT/UPDATE/DELETE) and return lastInsertRowid
+export function queryRun(sql: string, params: any[] = []): number {
+  const db = getDb();
+  db.run(sql, params);
+  saveDb();
+  return Number(db.exec("SELECT last_insert_rowid() as id")[0]?.values[0]?.[0] || 0);
 }
 
 // ==================== User ====================
 export function findUserByMobile(mobileNumber: string): any {
-  return getDb().prepare("SELECT * FROM User WHERE mobileNumber = ?").get(mobileNumber);
+  return queryOne("SELECT * FROM User WHERE mobileNumber = ?", [mobileNumber]);
 }
 
 export function findUserById(id: number): any {
-  return getDb().prepare("SELECT * FROM User WHERE id = ?").get(id);
+  return queryOne("SELECT * FROM User WHERE id = ?", [id]);
 }
 
 export function findUserWithProfile(id: number): any {
-  const user = getDb().prepare("SELECT * FROM User WHERE id = ?").get(id) as any;
+  const user = queryOne("SELECT * FROM User WHERE id = ?", [id]) as any;
   if (user) {
-    user.profile = getDb().prepare("SELECT * FROM Profile WHERE userId = ?").get(id) || null;
+    user.profile = queryOne("SELECT * FROM Profile WHERE userId = ?", [id]) || null;
   }
   return user;
 }
 
 export function createUser(fullName: string, mobileNumber: string, password: string, role: string = "applicant"): any {
   const now = new Date().toISOString();
-  getDb().prepare("INSERT INTO User (fullName, mobileNumber, password, role, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)").run(fullName, mobileNumber, password, role, now, now);
+  queryRun("INSERT INTO User (fullName, mobileNumber, password, role, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
+    [fullName, mobileNumber, password, role, now, now]);
   return findUserByMobile(mobileNumber);
 }
 
 export function updateUser(id: number, data: Record<string, any>): void {
   const sets = Object.keys(data).map(k => `${k} = ?`).join(", ");
   const values = Object.values(data);
-  getDb().prepare(`UPDATE User SET ${sets} WHERE id = ?`).run(...values, id);
+  queryRun(`UPDATE User SET ${sets} WHERE id = ?`, [...values, id]);
 }
 
 export function deleteUser(id: number): void {
-  getDb().prepare("DELETE FROM User WHERE id = ?").run(id);
+  queryRun("DELETE FROM User WHERE id = ?", [id]);
 }
 
 export function getAllUsers(): any[] {
-  return getDb().prepare(`
-    SELECT u.id, u.fullName, u.mobileNumber, u.role, u.isActive, u.createdAt,
-      p.isProfileComplete,
-      (SELECT COUNT(*) FROM Application WHERE userId = u.id) as applicationCount
-    FROM User u LEFT JOIN Profile p ON p.userId = u.id ORDER BY u.createdAt DESC
-  `).all();
+  return queryAll(`SELECT u.id, u.fullName, u.mobileNumber, u.role, u.isActive, u.createdAt,
+    p.isProfileComplete,
+    (SELECT COUNT(*) FROM Application WHERE userId = u.id) as applicationCount
+    FROM User u LEFT JOIN Profile p ON p.userId = u.id ORDER BY u.createdAt DESC`);
 }
 
 // ==================== Profile ====================
 export function findProfileByUserId(userId: number): any {
-  return getDb().prepare("SELECT * FROM Profile WHERE userId = ?").get(userId);
+  return queryOne("SELECT * FROM Profile WHERE userId = ?", [userId]);
 }
 
 export function upsertProfile(userId: number, data: Record<string, any>): void {
   const existing = findProfileByUserId(userId);
+  const now = new Date().toISOString();
   if (existing) {
     const sets = Object.keys(data).map(k => `${k} = ?`).join(", ");
     const values = Object.values(data);
-    getDb().prepare(`UPDATE Profile SET ${sets} WHERE userId = ?`).run(...values, userId);
+    queryRun(`UPDATE Profile SET ${sets} WHERE userId = ?`, [...values, userId]);
   } else {
-    const keys = ["userId", ...Object.keys(data)];
+    const keys = ["userId", ...Object.keys(data), "createdAt", "updatedAt"];
     const placeholders = keys.map(() => "?").join(", ");
-    const values = [userId, ...Object.values(data)];
-    const pnow = new Date().toISOString();
-    getDb().prepare(`INSERT INTO Profile (${["userId", ...Object.keys(data), "createdAt", "updatedAt"].join(", ")}) VALUES (${["userId", ...Object.keys(data)].map(() => "?").join(", ")}, ?, ?)`).run(...values, pnow, pnow);
+    const values = [userId, ...Object.values(data), now, now];
+    queryRun(`INSERT INTO Profile (${keys.join(", ")}) VALUES (${placeholders})`, values);
   }
 }
 
 // ==================== Education ====================
 export function getEducationByProfileId(profileId: number): any[] {
-  return getDb().prepare("SELECT * FROM Education WHERE profileId = ?").all(profileId);
+  return queryAll("SELECT * FROM Education WHERE profileId = ?", [profileId]);
 }
 
 export function createEducation(profileId: number, data: Record<string, any>): any {
   const keys = ["profileId", ...Object.keys(data)];
   const placeholders = keys.map(() => "?").join(", ");
   const values = [profileId, ...Object.values(data)];
-  const result = getDb().prepare(`INSERT INTO Education (${keys.join(", ")}) VALUES (${placeholders})`).run(...values);
-  return getDb().prepare("SELECT * FROM Education WHERE id = ?").get(result.lastInsertRowid);
+  const id = queryRun(`INSERT INTO Education (${keys.join(", ")}) VALUES (${placeholders})`, values);
+  return queryOne("SELECT * FROM Education WHERE id = ?", [id]);
 }
 
 export function deleteEducation(id: number): void {
-  getDb().prepare("DELETE FROM Education WHERE id = ?").run(id);
+  queryRun("DELETE FROM Education WHERE id = ?", [id]);
 }
 
 // ==================== Experience ====================
 export function getExperienceByProfileId(profileId: number): any[] {
-  return getDb().prepare("SELECT * FROM Experience WHERE profileId = ?").all(profileId);
+  return queryAll("SELECT * FROM Experience WHERE profileId = ?", [profileId]);
 }
 
 export function createExperience(profileId: number, data: Record<string, any>): any {
   const keys = ["profileId", ...Object.keys(data)];
   const placeholders = keys.map(() => "?").join(", ");
   const values = [profileId, ...Object.values(data)];
-  const result = getDb().prepare(`INSERT INTO Experience (${keys.join(", ")}) VALUES (${placeholders})`).run(...values);
-  return getDb().prepare("SELECT * FROM Experience WHERE id = ?").get(result.lastInsertRowid);
+  const id = queryRun(`INSERT INTO Experience (${keys.join(", ")}) VALUES (${placeholders})`, values);
+  return queryOne("SELECT * FROM Experience WHERE id = ?", [id]);
 }
 
 export function deleteExperience(id: number): void {
-  getDb().prepare("DELETE FROM Experience WHERE id = ?").run(id);
+  queryRun("DELETE FROM Experience WHERE id = ?", [id]);
 }
 
 // ==================== Training ====================
 export function getTrainingByProfileId(profileId: number): any[] {
-  return getDb().prepare("SELECT * FROM Training WHERE profileId = ?").all(profileId);
+  return queryAll("SELECT * FROM Training WHERE profileId = ?", [profileId]);
 }
 
 export function createTraining(profileId: number, data: Record<string, any>): any {
   const keys = ["profileId", ...Object.keys(data)];
   const placeholders = keys.map(() => "?").join(", ");
   const values = [profileId, ...Object.values(data)];
-  const result = getDb().prepare(`INSERT INTO Training (${keys.join(", ")}) VALUES (${placeholders})`).run(...values);
-  return getDb().prepare("SELECT * FROM Training WHERE id = ?").get(result.lastInsertRowid);
+  const id = queryRun(`INSERT INTO Training (${keys.join(", ")}) VALUES (${placeholders})`, values);
+  return queryOne("SELECT * FROM Training WHERE id = ?", [id]);
 }
 
 export function deleteTraining(id: number): void {
-  getDb().prepare("DELETE FROM Training WHERE id = ?").run(id);
+  queryRun("DELETE FROM Training WHERE id = ?", [id]);
 }
 
 // ==================== JobPost ====================
@@ -135,31 +186,31 @@ export function getJobPosts(search?: string, company?: string, designation?: str
   if (company) { sql += " AND jp.companyName LIKE ?"; params.push(`%${company}%`); }
   if (designation) { sql += " AND jp.designation LIKE ?"; params.push(`%${designation}%`); }
   sql += " ORDER BY jp.createdAt DESC";
-  return getDb().prepare(sql).all(...params);
+  return queryAll(sql, params);
 }
 
 export function getJobPostById(id: number): any {
-  return getDb().prepare("SELECT jp.*, (SELECT COUNT(*) FROM Application WHERE jobPostId = jp.id) as applicationCount FROM JobPost jp WHERE jp.id = ?").get(id);
+  return queryOne("SELECT jp.*, (SELECT COUNT(*) FROM Application WHERE jobPostId = jp.id) as applicationCount FROM JobPost jp WHERE jp.id = ?", [id]);
 }
 
 export function createJobPost(data: Record<string, any>): any {
+  const now = new Date().toISOString();
   const keys = Object.keys(data);
   const placeholders = keys.map(() => "?").join(", ");
   const values = Object.values(data);
-  const jnow = new Date().toISOString();
-  const result = getDb().prepare(`INSERT INTO JobPost (${["createdAt", "updatedAt", ...Object.keys(data)].join(", ")}) VALUES (?, ?, ${placeholders})`).run(jnow, jnow, ...values);
-  return getDb().prepare("SELECT * FROM JobPost WHERE id = ?").get(result.lastInsertRowid);
+  const id = queryRun(`INSERT INTO JobPost (createdAt, updatedAt, ${keys.join(", ")}) VALUES (?, ?, ${placeholders})`, [now, now, ...values]);
+  return queryOne("SELECT * FROM JobPost WHERE id = ?", [id]);
 }
 
 export function updateJobPost(id: number, data: Record<string, any>): any {
   const sets = Object.keys(data).map(k => `${k} = ?`).join(", ");
   const values = Object.values(data);
-  getDb().prepare(`UPDATE JobPost SET ${sets} WHERE id = ?`).run(...values, id);
-  return getDb().prepare("SELECT * FROM JobPost WHERE id = ?").get(id);
+  queryRun(`UPDATE JobPost SET ${sets} WHERE id = ?`, [...values, id]);
+  return queryOne("SELECT * FROM JobPost WHERE id = ?", [id]);
 }
 
 export function deleteJobPost(id: number): void {
-  getDb().prepare("DELETE FROM JobPost WHERE id = ?").run(id);
+  queryRun("DELETE FROM JobPost WHERE id = ?", [id]);
 }
 
 // ==================== Application ====================
@@ -174,14 +225,14 @@ export function getApplications(status?: string, userId?: number): any[] {
     sql += " AND a.status = ?"; params.push(status);
   }
   sql += " ORDER BY a.createdAt DESC";
-  return getDb().prepare(sql).all(...params);
+  return queryAll(sql, params);
 }
 
 export function getApplicationById(id: number): any {
-  const app = getDb().prepare(`SELECT a.*,
+  const app = queryOne(`SELECT a.*,
     json_object('id', jp.id, 'title', jp.title, 'companyName', jp.companyName, 'designation', jp.designation) as jobPost,
     json_object('id', u.id, 'fullName', u.fullName, 'mobileNumber', u.mobileNumber, 'role', u.role) as user
-  FROM Application a JOIN JobPost jp ON jp.id = a.jobPostId JOIN User u ON u.id = a.userId WHERE a.id = ?`).get(id) as any;
+  FROM Application a JOIN JobPost jp ON jp.id = a.jobPostId JOIN User u ON u.id = a.userId WHERE a.id = ?`, [id]) as any;
   if (app) {
     try { app.jobPost = JSON.parse(app.jobPost); } catch {}
     try { app.user = JSON.parse(app.user); } catch {}
@@ -190,36 +241,37 @@ export function getApplicationById(id: number): any {
 }
 
 export function findApplicationByUserAndJob(userId: number, jobPostId: number): any {
-  return getDb().prepare("SELECT * FROM Application WHERE userId = ? AND jobPostId = ?").get(userId, jobPostId);
+  return queryOne("SELECT * FROM Application WHERE userId = ? AND jobPostId = ?", [userId, jobPostId]);
 }
 
 export function createApplication(data: Record<string, any>): any {
+  const now = new Date().toISOString();
   const keys = Object.keys(data);
   const placeholders = keys.map(() => "?").join(", ");
   const values = Object.values(data);
-  const anow = new Date().toISOString();
-  const result = getDb().prepare(`INSERT INTO Application (${["createdAt", "updatedAt", ...Object.keys(data)].join(", ")}) VALUES (?, ?, ${placeholders})`).run(anow, anow, ...values);
-  return getDb().prepare("SELECT * FROM Application WHERE id = ?").get(result.lastInsertRowid);
+  const id = queryRun(`INSERT INTO Application (createdAt, updatedAt, ${keys.join(", ")}) VALUES (?, ?, ${placeholders})`, [now, now, ...values]);
+  return queryOne("SELECT * FROM Application WHERE id = ?", [id]);
 }
 
 export function updateApplication(id: number, data: Record<string, any>): any {
   const sets = Object.keys(data).map(k => `${k} = ?`).join(", ");
   const values = Object.values(data);
-  getDb().prepare(`UPDATE Application SET ${sets} WHERE id = ?`).run(...values, id);
-  return getDb().prepare("SELECT * FROM Application WHERE id = ?").get(id);
+  queryRun(`UPDATE Application SET ${sets} WHERE id = ?`, [...values, id]);
+  return queryOne("SELECT * FROM Application WHERE id = ?", [id]);
 }
 
 // ==================== Document ====================
 export function createDocument(data: Record<string, any>): any {
+  const now = new Date().toISOString();
   const keys = Object.keys(data);
   const placeholders = keys.map(() => "?").join(", ");
   const values = Object.values(data);
-  const result = getDb().prepare(`INSERT INTO Document (${keys.join(", ")}) VALUES (${placeholders})`).run(...values);
-  return getDb().prepare("SELECT * FROM Document WHERE id = ?").get(result.lastInsertRowid);
+  const id = queryRun(`INSERT INTO Document (createdAt, ${keys.join(", ")}) VALUES (?, ${placeholders})`, [now, ...values]);
+  return queryOne("SELECT * FROM Document WHERE id = ?", [id]);
 }
 
 export function getDocumentsByUserId(userId: number): any[] {
-  return getDb().prepare("SELECT * FROM Document WHERE userId = ? ORDER BY createdAt DESC").all(userId);
+  return queryAll("SELECT * FROM Document WHERE userId = ? ORDER BY createdAt DESC", [userId]);
 }
 
 // ==================== Folder ====================
@@ -232,51 +284,53 @@ export function getFolders(parentId: number | null, applicationId?: number | nul
     sql += " AND applicationId = ?"; params.push(applicationId);
   }
   sql += " ORDER BY isFile ASC, name ASC";
-  return getDb().prepare(sql).all(...params);
+  return queryAll(sql, params);
 }
 
 export function createFolder(data: Record<string, any>): any {
+  const now = new Date().toISOString();
   const keys = Object.keys(data);
   const placeholders = keys.map(() => "?").join(", ");
   const values = Object.values(data);
-  const result = getDb().prepare(`INSERT INTO Folder (${keys.join(", ")}) VALUES (${placeholders})`).run(...values);
-  return getDb().prepare("SELECT * FROM Folder WHERE id = ?").get(result.lastInsertRowid);
+  const id = queryRun(`INSERT INTO Folder (createdAt, ${keys.join(", ")}) VALUES (?, ${placeholders})`, [now, ...values]);
+  return queryOne("SELECT * FROM Folder WHERE id = ?", [id]);
 }
 
 export function findFolderByApplicationId(applicationId: number): any {
-  return getDb().prepare("SELECT * FROM Folder WHERE applicationId = ?").get(applicationId);
+  return queryOne("SELECT * FROM Folder WHERE applicationId = ?", [applicationId]);
 }
 
 export function updateFolder(id: number, data: Record<string, any>): void {
   const sets = Object.keys(data).map(k => `${k} = ?`).join(", ");
   const values = Object.values(data);
-  getDb().prepare(`UPDATE Folder SET ${sets} WHERE id = ?`).run(...values, id);
+  queryRun(`UPDATE Folder SET ${sets} WHERE id = ?`, [...values, id]);
 }
 
 // ==================== Permission ====================
 export function upsertPermission(name: string, description: string): any {
-  const existing = getDb().prepare("SELECT * FROM Permission WHERE name = ?").get(name);
+  const existing = queryOne("SELECT * FROM Permission WHERE name = ?", [name]);
   if (existing) return existing;
-  getDb().prepare("INSERT INTO Permission (name, description) VALUES (?, ?)").run(name, description);
-  return getDb().prepare("SELECT * FROM Permission WHERE name = ?").get(name);
+  queryRun("INSERT INTO Permission (name, description) VALUES (?, ?)", [name, description]);
+  return queryOne("SELECT * FROM Permission WHERE name = ?", [name]);
 }
 
 export function getAllPermissions(): any[] {
-  return getDb().prepare(`SELECT p.* FROM Permission p`).all();
+  return queryAll("SELECT p.* FROM Permission p");
 }
 
 export function upsertPermissionAssignment(userId: number, permissionId: number, granted: boolean): void {
-  const existing = getDb().prepare("SELECT * FROM PermissionAssignment WHERE userId = ? AND permissionId = ?").get(userId, permissionId) as any;
+  const existing = queryOne("SELECT * FROM PermissionAssignment WHERE userId = ? AND permissionId = ?", [userId, permissionId]) as any;
   if (existing) {
-    getDb().prepare("UPDATE PermissionAssignment SET granted = ? WHERE id = ?").run(granted ? 1 : 0, existing.id);
+    queryRun("UPDATE PermissionAssignment SET granted = ? WHERE id = ?", [granted ? 1 : 0, existing.id]);
   } else {
-    getDb().prepare("INSERT INTO PermissionAssignment (userId, permissionId, granted) VALUES (?, ?, ?)").run(userId, permissionId, granted ? 1 : 0);
+    queryRun("INSERT INTO PermissionAssignment (userId, permissionId, granted) VALUES (?, ?, ?)", [userId, permissionId, granted ? 1 : 0]);
   }
 }
 
 // ==================== ActivityLog ====================
 export function createActivityLog(userId: number, action: string, details: string = ""): void {
-  getDb().prepare("INSERT INTO ActivityLog (userId, action, details) VALUES (?, ?, ?)").run(userId, action, details);
+  const now = new Date().toISOString();
+  queryRun("INSERT INTO ActivityLog (userId, action, details, createdAt) VALUES (?, ?, ?, ?)", [userId, action, details, now]);
 }
 
 export function getActivityLogs(userId?: number, limit: number = 100): any[] {
@@ -284,33 +338,34 @@ export function getActivityLogs(userId?: number, limit: number = 100): any[] {
   const params: any[] = [];
   if (userId) { sql += " WHERE al.userId = ?"; params.push(userId); }
   sql += " ORDER BY al.createdAt DESC LIMIT ?"; params.push(limit);
-  return getDb().prepare(sql).all(...params);
+  return queryAll(sql, params);
 }
 
 // ==================== Notification ====================
 export function createNotification(userId: number, title: string, message: string): void {
-  getDb().prepare("INSERT INTO Notification (userId, title, message) VALUES (?, ?, ?)").run(userId, title, message);
+  const now = new Date().toISOString();
+  queryRun("INSERT INTO Notification (userId, title, message, createdAt) VALUES (?, ?, ?, ?)", [userId, title, message, now]);
 }
 
 export function getNotificationsByUserId(userId: number, limit: number = 50): any[] {
-  return getDb().prepare("SELECT * FROM Notification WHERE userId = ? ORDER BY createdAt DESC LIMIT ?").all(userId, limit);
+  return queryAll("SELECT * FROM Notification WHERE userId = ? ORDER BY createdAt DESC LIMIT ?", [userId, limit]);
 }
 
 export function markNotificationRead(id: number): void {
-  getDb().prepare("UPDATE Notification SET isRead = 1 WHERE id = ?").run(id);
+  queryRun("UPDATE Notification SET isRead = 1 WHERE id = ?", [id]);
 }
 
 export function markAllNotificationsRead(userId: number): void {
-  getDb().prepare("UPDATE Notification SET isRead = 1 WHERE userId = ?").run(userId);
+  queryRun("UPDATE Notification SET isRead = 1 WHERE userId = ?", [userId]);
 }
 
 // ==================== Helpers ====================
 export function getProfileWithRelations(userId: number): any {
-  const profile = getDb().prepare("SELECT * FROM Profile WHERE userId = ?").get(userId) as any;
+  const profile = queryOne("SELECT * FROM Profile WHERE userId = ?", [userId]) as any;
   if (!profile) return null;
-  profile.education = getDb().prepare("SELECT * FROM Education WHERE profileId = ?").all(profile.id);
-  profile.experience = getDb().prepare("SELECT * FROM Experience WHERE profileId = ?").all(profile.id);
-  profile.training = getDb().prepare("SELECT * FROM Training WHERE profileId = ?").all(profile.id);
+  profile.education = queryAll("SELECT * FROM Education WHERE profileId = ?", [profile.id]);
+  profile.experience = queryAll("SELECT * FROM Experience WHERE profileId = ?", [profile.id]);
+  profile.training = queryAll("SELECT * FROM Training WHERE profileId = ?", [profile.id]);
   return profile;
 }
 
@@ -321,14 +376,14 @@ export function getApplicationWithDetails(id: number): any {
     const profile = getProfileWithRelations(app.user.id);
     if (profile) app.user.profile = profile;
   }
-  app.folders = getDb().prepare("SELECT * FROM Folder WHERE applicationId = ?").all(id);
+  app.folders = queryAll("SELECT * FROM Folder WHERE applicationId = ?", [id]);
   return app;
 }
 
 export function count(table: string, where: string = "1=1", params: any[] = []): number {
-  return (getDb().prepare(`SELECT COUNT(*) as count FROM ${table} WHERE ${where}`).get(...params) as any).count;
+  return (queryOne(`SELECT COUNT(*) as count FROM ${table} WHERE ${where}`, params) as any)?.count || 0;
 }
 
 export function closeDb(): void {
-  if (db) db.close();
+  if (db) { saveDb(); db.close(); }
 }

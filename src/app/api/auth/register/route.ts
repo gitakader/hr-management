@@ -1,10 +1,11 @@
 import { NextRequest } from "next/server";
 import { hashPassword, generateToken } from "@/lib/auth";
 import { errorResponse, successResponse } from "@/lib/middleware";
-import { findUserByMobile, createUser, createFolder } from "@/lib/db";
+import { findUserByMobile, createUser, createFolder, initDb } from "@/lib/db";
 
 export async function POST(req: NextRequest) {
   try {
+    await initDb();
     const { fullName, mobileNumber, password } = await req.json();
     if (!fullName || !mobileNumber || !password) {
       return errorResponse("All fields are required");
@@ -17,8 +18,6 @@ export async function POST(req: NextRequest) {
 
     const hashedPassword = hashPassword(password);
     const user = createUser(fullName, mobileNumber, hashedPassword, "applicant");
-
-    // Create initial folder for the user
     createFolder({ name: mobileNumber, isFile: false });
 
     const token = generateToken({ id: user.id as number, mobileNumber, role: "applicant" });

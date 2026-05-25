@@ -1,10 +1,11 @@
 import { NextRequest } from "next/server";
 import { comparePassword, generateToken } from "@/lib/auth";
 import { errorResponse, successResponse } from "@/lib/middleware";
-import { findUserByMobile } from "@/lib/db";
+import { findUserByMobile, initDb } from "@/lib/db";
 
 export async function POST(req: NextRequest) {
   try {
+    await initDb();
     const { mobileNumber, password } = await req.json();
     if (!mobileNumber || !password) {
       return errorResponse("Mobile number and password are required");

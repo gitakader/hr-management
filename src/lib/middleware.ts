@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, JWTPayload } from "./auth";
+import { initDb } from "./db";
 
 export type AuthHandler = (
   req: NextRequest,
@@ -27,6 +28,7 @@ export function withAuth(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
+    await initDb(); // Initialize DB
     return handler(req, { user, params });
   };
 }
